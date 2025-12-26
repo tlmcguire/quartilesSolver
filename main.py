@@ -150,6 +150,7 @@ def main():
         # Filter and color-code output
         valid_words = {w for w, status in results.items() if status == 'valid'}
         unsure_words = {w for w, status in results.items() if status == 'unsure'}
+        invalid_words = {w for w, status in results.items() if status == 'invalid'}
         
         if valid_words or unsure_words:
             output = sorted(valid_words | unsure_words, key=lambda s: (len(s), s))
@@ -158,11 +159,60 @@ def main():
                     print(f"{_GREEN}{w}{_RESET}")
                 elif results[w] == 'unsure':
                     print(f"{_YELLOW}{w}{_RESET}")
-            print(f"Total valid words: {len(valid_words)}")
-            if unsure_words:
-                print(f"Total unsure words: {len(unsure_words)}")
+            
+            # Calculate stats
+            all_good_words = list(valid_words | unsure_words)
+            total_candidates = len(results)
+            
+            if all_good_words:
+                longest = max(all_good_words, key=len)
+                shortest = min(all_good_words, key=len)
+                avg_length = sum(len(w) for w in all_good_words) / len(all_good_words)
+                
+                # Count by length
+                from collections import Counter
+                length_dist = Counter(len(w) for w in all_good_words)
+                
+                # Calculate vowel stats
+                vowels = 'aeiou'
+                total_letters = sum(len(w) for w in all_good_words)
+                vowel_count = sum(sum(1 for c in w if c.lower() in vowels) for w in all_good_words)
+                vowel_pct = (vowel_count / total_letters * 100) if total_letters > 0 else 0
+                
+                # Success rate
+                success_rate = (len(all_good_words) / total_candidates * 100) if total_candidates > 0 else 0
+                valid_rate = (len(valid_words) / len(all_good_words) * 100) if all_good_words else 0
+                
+                # Most common starting letters
+                starting_letters = Counter(w[0].lower() for w in all_good_words)
+                top_starters = starting_letters.most_common(3)
+                
+                print(f"\n--- Statistics ---")
+                print(f"Total candidates checked: {total_candidates}")
+                print(f"Success rate: {success_rate:.2f}% ({len(all_good_words)} found)")
+                print(f"  Valid (green): {len(valid_words)} ({valid_rate:.1f}% of found)")
+                if unsure_words:
+                    unsure_rate = (len(unsure_words) / len(all_good_words) * 100) if all_good_words else 0
+                    print(f"  Unsure (yellow): {len(unsure_words)} ({unsure_rate:.1f}% of found)")
+                print(f"  Invalid: {len(invalid_words)}")
+                print(f"\nLongest word: {_GREEN}{longest}{_RESET} ({len(longest)} letters)")
+                print(f"Shortest word: {_YELLOW}{shortest}{_RESET} ({len(shortest)} letters)")
+                print(f"Average length: {avg_length:.1f} letters")
+                print(f"Vowel content: {vowel_pct:.1f}% ({vowel_count}/{total_letters} letters)")
+                print(f"Length distribution: {dict(sorted(length_dist.items()))}")
+                print(f"Top starting letters: {', '.join(f'{letter}({count})' for letter, count in top_starters)}")
+            else:
+                print(f"\n--- Statistics ---")
+                print(f"Total candidates checked: {total_candidates}")
+                print(f"Total valid words: {len(valid_words)}")
+                if unsure_words:
+                    print(f"Total unsure words: {len(unsure_words)}")
+                if invalid_words:
+                    print(f"Total invalid words: {len(invalid_words)}")
         else:
             print("No valid words found.")
+            if invalid_words:
+                print(f"Total invalid words: {len(invalid_words)}")
 
 if __name__ == "__main__":
     main()
