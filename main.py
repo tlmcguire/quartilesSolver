@@ -1,6 +1,36 @@
 from nltk.corpus import wordnet as wn
 from itertools import permutations
 from typing import Iterable, List, Optional
+import nltk
+
+_WORDNET_READY = False
+
+
+def ensure_wordnet() -> None:
+    """Make sure the WordNet corpus is available locally."""
+    global _WORDNET_READY
+    if _WORDNET_READY:
+        return
+    try:
+        wn.synsets("test")
+        _WORDNET_READY = True
+    except LookupError:
+        try:
+            nltk.download("wordnet", quiet=True, raise_on_error=True)
+        except ValueError:
+            # macOS python.org builds sometimes lack system certs; try certifi bundle
+            try:
+                import ssl
+                import certifi
+
+                # Reset in case it was set to a non-callable SSLContext instance
+                ssl._create_default_https_context = ssl.create_default_context
+                ssl._create_default_https_context = lambda *_, **__: ssl.create_default_context(cafile=certifi.where())
+                nltk.download("wordnet", quiet=True, raise_on_error=True)
+            except Exception:
+                raise
+        wn.synsets("test")
+        _WORDNET_READY = True
 
 # Tool to solve Apple News+ Quartiles game
 # Game format: 5 rows and 4 cols of 2-3 letter word fragments, which can themselves be words.
@@ -15,17 +45,22 @@ def check(w: str) -> bool:
     :return: True if valid, false if invalid
     :rtype: bool
     """
-    if not w: 
+    ensure_wordnet()
+    if not w:
         return False
     wl = w.lower()
-    # direct lookup
-    if wn.synsets(wl):
+    # require WordNet lemma matches the exact surface form and has some corpus frequency
+    syns = wn.synsets(wl)
+    if not syns:
+        return False
+    lemma_counts = [l.count() for s in syns for l in s.lemmas() if l.name().lower() == wl]
+    if lemma_counts and max(lemma_counts) >= 2:
         return True
-    # try common morphological variants: single/plural/verb forms
+    # fallback to morphological variant if nothing matched exactly but WordNet knows the root
     lemma = wn.morphy(wl)
-    if lemma and wn.morphy(wl):
+    if lemma and wn.synsets(lemma):
         return True
-    return False # invalid
+    return False  # invalid
 
 def concat(fragments: Iterable[str], minParts: int=1, maxParts: Optional[int] = None) -> List[str]:
     """
@@ -59,11 +94,27 @@ def concat(fragments: Iterable[str], minParts: int=1, maxParts: Optional[int] = 
 
 def main():
     while True:
-        words = input("Enter all word fragments separated with spaces: ").split() # input words, split into list
-        if words.len() == 20:
+        raw = input("Enter all word fragments separated by spaces (or 'q' to quit): ").lower().strip()
+        if not raw:
+            print("Enter at least one fragment.")
+            continue
+        if raw.lower() in {"q"}:
             break
+
+        fragments = raw.split()
+        minParts, maxParts = 1, 4
+
+        ensure_wordnet()
+        
+        candidates = concat(fragments, minParts, maxParts)
+        valid = sorted({w for w in candidates if check(w)}, key=lambda s: (len(s), s))
+
+        if valid:
+            for w in valid:
+                print(w)
+            print(f"Total valid words: {len(valid)}")
         else:
-            print("Incorrect format: please input all 20 words separated with spaces.")
+            print("No valid words found.")
 
-
-    pass
+if __name__ == "__main__":
+    main()
