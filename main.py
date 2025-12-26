@@ -1,66 +1,99 @@
-from nltk.corpus import wordnet as wn
 from itertools import permutations
 from typing import Iterable, List, Optional
+from nltk.corpus import wordnet as wn
 import nltk
-
-_WORDNET_READY = False
-
-
-def ensure_wordnet() -> None:
-    """Make sure the WordNet corpus is available locally."""
-    global _WORDNET_READY
-    if _WORDNET_READY:
-        return
-    try:
-        wn.synsets("test")
-        _WORDNET_READY = True
-    except LookupError:
-        try:
-            nltk.download("wordnet", quiet=True, raise_on_error=True)
-        except ValueError:
-            # macOS python.org builds sometimes lack system certs; try certifi bundle
-            try:
-                import ssl
-                import certifi
-
-                # Reset in case it was set to a non-callable SSLContext instance
-                ssl._create_default_https_context = ssl.create_default_context
-                ssl._create_default_https_context = lambda *_, **__: ssl.create_default_context(cafile=certifi.where())
-                nltk.download("wordnet", quiet=True, raise_on_error=True)
-            except Exception:
-                raise
-        wn.synsets("test")
-        _WORDNET_READY = True
 
 # Tool to solve Apple News+ Quartiles game
 # Game format: 5 rows and 4 cols of 2-3 letter word fragments, which can themselves be words.
 # Goal: Combine fragments to form all possible words, in particular the 5 fragment words (of which there are only 5)
 
-def check(w: str) -> bool:
+# Ensure WordNet is downloaded
+try:
+    wn.synsets("test")
+except LookupError:
+    nltk.download("wordnet", quiet=True)
+
+# Load secondary spell-checker for cross-validation
+try:
+    from spellchecker import SpellChecker
+    _SPELL = SpellChecker(language='en')
+except ImportError:
+    _SPELL = None
+
+# Load tertiary spell-checker (enchant) for triple cross-validation
+try:
+    import enchant
+    _ENCHANT = enchant.Dict("en_US")
+except (ImportError, Exception):
+    _ENCHANT = None
+
+# ANSI color codes
+_GREEN = '\033[92m'
+_RED = '\033[91m'
+_YELLOW = '\033[93m'
+_RESET = '\033[0m'
+
+def check(w: str, debug: bool = False) -> str:
     """
-    Returns true if 'w' is a valid English word.
+    Returns validation status for a word using triple cross-validation.
+    Stricter for shorter words (≤3 chars) which rarely show as green.
     
     :param w: Word to check.
     :type w: str
-    :return: True if valid, false if invalid
-    :rtype: bool
+    :param debug: If True, print validation details
+    :type debug: bool
+    :return: 'valid' (green - all pass), 'unsure' (yellow - 2 pass), or 'invalid' (red - 1 or fewer pass)
+    :rtype: str
     """
-    ensure_wordnet()
     if not w:
-        return False
+        return 'invalid'
     wl = w.lower()
-    # require WordNet lemma matches the exact surface form and has some corpus frequency
-    syns = wn.synsets(wl)
-    if not syns:
-        return False
-    lemma_counts = [l.count() for s in syns for l in s.lemmas() if l.name().lower() == wl]
-    if lemma_counts and max(lemma_counts) >= 2:
-        return True
-    # fallback to morphological variant if nothing matched exactly but WordNet knows the root
-    lemma = wn.morphy(wl)
-    if lemma and wn.synsets(lemma):
-        return True
-    return False  # invalid
+    
+    validators_passed = 0
+    wordnet_valid = False
+    spell_valid = False
+    enchant_valid = False
+    
+    # Check NLTK WordNet
+    if wn.synsets(wl):
+        validators_passed += 1
+        wordnet_valid = True
+    
+    # Check pyspellchecker if available
+    if _SPELL:
+        if wl not in _SPELL.unknown({wl}):
+            validators_passed += 1
+            spell_valid = True
+    
+    # Check pyenchant if available
+    if _ENCHANT:
+        if _ENCHANT.check(wl):
+            validators_passed += 1
+            enchant_valid = True
+    
+    if debug:
+        print(f"\n{wl}: WordNet={wordnet_valid}, SpellChecker={spell_valid}, Enchant={enchant_valid}, Total={validators_passed}")
+    
+    # Stricter validation for short words (≤3 chars)
+    is_short = len(wl) <= 3
+    total_validators = 2 + (1 if _ENCHANT else 0)
+    
+    if is_short:
+        # Short words: require all validators + must be in WordNet
+        if validators_passed == total_validators and wordnet_valid:
+            return 'valid'
+        elif validators_passed >= 2 and wordnet_valid:
+            return 'unsure'
+        else:
+            return 'invalid'
+    else:
+        # Longer words: standard validation
+        if validators_passed == total_validators:
+            return 'valid'
+        elif validators_passed >= total_validators - 1 and wordnet_valid:
+            return 'unsure'
+        else:
+            return 'invalid'
 
 def concat(fragments: Iterable[str], minParts: int=1, maxParts: Optional[int] = None) -> List[str]:
     """
@@ -103,16 +136,31 @@ def main():
 
         fragments = raw.split()
         minParts, maxParts = 1, 4
-
-        ensure_wordnet()
         
-        candidates = concat(fragments, minParts, maxParts)
-        valid = sorted({w for w in candidates if check(w)}, key=lambda s: (len(s), s))
+        # Ask if user wants debug mode
+        debug_input = input("Show validation details? (y/n, default=n): ").lower().strip()
+        debug_mode = debug_input == 'y'
 
-        if valid:
-            for w in valid:
-                print(w)
-            print(f"Total valid words: {len(valid)}")
+        candidates = concat(fragments, minParts, maxParts)
+        results = {}
+        for w in candidates:
+            status = check(w, debug=debug_mode)
+            results[w] = status
+
+        # Filter and color-code output
+        valid_words = {w for w, status in results.items() if status == 'valid'}
+        unsure_words = {w for w, status in results.items() if status == 'unsure'}
+        
+        if valid_words or unsure_words:
+            output = sorted(valid_words | unsure_words, key=lambda s: (len(s), s))
+            for w in output:
+                if results[w] == 'valid':
+                    print(f"{_GREEN}{w}{_RESET}")
+                elif results[w] == 'unsure':
+                    print(f"{_YELLOW}{w}{_RESET}")
+            print(f"Total valid words: {len(valid_words)}")
+            if unsure_words:
+                print(f"Total unsure words: {len(unsure_words)}")
         else:
             print("No valid words found.")
 
